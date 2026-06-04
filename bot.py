@@ -280,30 +280,27 @@ Tel: 0931 123456"""
         logger.error(f"Email error: {e}")
         return False
 
-def main():
-    app = Application.builder().token(TOKEN).build()
-    conv = ConversationHandler(
-        entry_points=[CommandHandler("start", start)],
-        states={
-            SELECT_CUSTOMER: [CallbackQueryHandler(kunde_selected, pattern="^kunde_")],
-            SELECT_ITEMS: [
-                CallbackQueryHandler(item_selected, pattern="^item_"),
-                CallbackQueryHandler(item_selected, pattern="^voice$"),
-                CallbackQueryHandler(item_selected, pattern="^weiter$"),
-            ],
-            WAITING_VOICE: [
-                MessageHandler(filters.VOICE | filters.TEXT & ~filters.COMMAND, voice_handler),
-                CallbackQueryHandler(confirm_handler, pattern="^(senden|nurpdf|edit)$"),
-            ],
-            CONFIRM: [CallbackQueryHandler(confirm_handler, pattern="^(senden|nurpdf|edit)$")],
-        },
-        fallbacks=[CommandHandler("start", start)],
-        per_message=False,
-    )
-    app.add_handler(conv)
-    app.add_handler(CallbackQueryHandler(neu_handler, pattern="^neu$"))
-    print("Bot läuft...")
-    app.run_polling()
+import asyncio
 
-if __name__ == "__main__":
-    main()
+async def main():
+    if not TOKEN:
+        logger.error("TELEGRAM_TOKEN nicht gesetzt!")
+        return
+
+    logger.info("Bot laeuft...")
+    app = Application.builder().token(TOKEN).build()
+
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CallbackQueryHandler(kunde_ausgewaehlt, pattern=r"^kunde_\d+$"))
+    app.add_handler(CallbackQueryHandler(leistung_callback, pattern=r"^(add_|erstellen|senden|neustart)"))
+
+    await app.initialize()
+    await app.start()
+    await app.updater.start_polling(allowed_updates=Update.ALL_TYPES)
+    
+    # Läuft bis Ctrl+C
+    await asyncio.Event().wait()
+
+
+if __name__ == '__main__':
+    asyncio.run(main())
