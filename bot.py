@@ -1,8 +1,8 @@
 import os
 import logging
 import asyncio
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InlineQueryResultArticle, InputTextMessageContent
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, InlineQueryHandler, filters, ContextTypes
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -245,6 +245,55 @@ async def leistung_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode='Markdown'
         )
 
+
+
+async def inline_suche(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.inline_query.query.strip().lower()
+    if not query:
+        treffer = list(enumerate(KUNDEN))
+    else:
+        treffer = [(i, k) for i, k in enumerate(KUNDEN) if query in k["name"].lower()]
+
+    results = []
+    for i, kunde in treffer:
+        results.append(InlineQueryResultArticle(
+            id=str(i),
+            title=kunde["name"],
+            description=f"{kunde['schloss']} | {kunde['adresse']}",
+            input_message_content=InputTextMessageContent(f"/kunde_{i}")
+        ))
+    await update.inline_query.answer(results, cache_time=0)
+
+
+async def kunde_per_inline(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text.strip()
+    if not text.startswith("/kunde_"):
+        return
+    try:
+        idx = int(text.replace("/kunde_", ""))
+        kunde = KUNDEN[idx]
+    except:
+        return
+    context.user_data["kunde"] = kunde
+    context.user_data["leistungen"] = []
+    keyboard = []
+    row = []
+    for name, preis in LEISTUNGEN.items():
+        row.append(InlineKeyboardButton(f"{name} ({preis:.0f}€)", callback_data=f"add_{name}"))
+        if len(row) == 2:
+            keyboard.append(row)
+            row = []
+    if row:
+        keyboard.append(row)
+    keyboard.append([InlineKeyboardButton("✅ Rechnung erstellen", callback_data="erstellen")])
+    await update.message.reply_text(
+        f"*Kunde:* {kunde['name']}
+*Schloss:* {kunde['schloss']}
+
+Leistungen antippen:",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode="Markdown"
+    )
 
 async def main():
     if not TOKEN:
