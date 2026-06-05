@@ -3,6 +3,7 @@ import logging
 import asyncio
 import io
 import json
+import base64
 from datetime import datetime
 from telegram import (
     Update, InlineKeyboardButton, InlineKeyboardMarkup,
@@ -20,6 +21,8 @@ from email import encoders
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import cm
 from reportlab.pdfgen import canvas
+import urllib.request
+import urllib.error
 
 logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -27,9 +30,11 @@ logger = logging.getLogger(__name__)
 TOKEN = os.environ.get("TELEGRAM_TOKEN")
 GMAIL_USER = os.environ.get("GMAIL_USER", "")
 GMAIL_PASSWORD = os.environ.get("GMAIL_APP_PASSWORD", "")
+GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")
+GITHUB_REPO = os.environ.get("GITHUB_REPO", "")  # z.B. "Createaction111/schlossbot"
 
-KUNDEN_FILE = "kunden.json"
-LOG_FILE = "rechnungslog.json"
+KUNDEN_FILE_GITHUB = "kunden.xlsx"
+LOG_FILE_GITHUB = "rechnungslog.xlsx"
 
 LEISTUNGEN = {
     "Batterietausch": 15.00,
@@ -45,26 +50,190 @@ STUNDENSATZ = 20.00
 STANDARD_KUNDEN = [
     {"name": "Max Mustermann", "email": "max@example.com", "adresse": "Musterstr. 1, 97070 Wuerzburg", "schloss": "Chipschloss XY"},
     {"name": "Anna Schmidt", "email": "anna@example.com", "adresse": "Hauptstr. 5, 97080 Wuerzburg", "schloss": "Elektronisches Schloss"},
-    {"name": "Klaus Weber", "email": "klaus@example.com", "adresse": "Gartenweg 3, 97082 Wuerzburg", "schloss": "Chipschloss Pro"},
 ]
 
 
-def lade_kunden():
-    if os.path.exists(KUNDEN_FILE):
-        with open(KUNDEN_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    return STANDARD_KUNDEN
+# ─────────────────────────────────────────────
+# GITHUB HILFSFUNKTIONEN
+# ─────────────────────────────────────────────
 
+def github_api(method, path, data=None):
+    """Einfacher GitHub API Aufruf ohne externe Libraries."""
+    url = "https://api.github.com/repos/" + GITHUB_REPO + "/" + path
+    headers = {
+        "Authorization": "token " + GITHUB_TOKEN,
+        "Accept": "application/vnd.github.v3+json",
+        "Content-Type": "application/json",
+        "User-Agent": "SchlossBot"
+    }
+    body = json.dumps(data).encode("utf-8") if data else None
+    req = urllib.request.Request(url, data=body, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(req) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            return None
+        raise
+
+
+def lade_datei_von_github(dateiname):
+    """Lädt Dateiinhalt (bytes) + SHA von GitHub."""
+    result = github_api("GET", "contents/" + dateiname)
+    if result is None:
+        return None, None
+    inhalt = base64.b64decode(result["content"])
+    return inhalt, result["sha"]
+
+
+def speichere_datei_auf_github(dateiname, inhalt_bytes, commit_msg, sha=None):
+    """Speichert/überschreibt Datei auf GitHub."""
+    if not GITHUB_TOKEN or not GITHUB_REPO:
+        logger.warning("GITHUB_TOKEN oder GITHUB_REPO nicht gesetzt!")
+        return False
+    data = {
+        "message": commit_msg,
+        "content": base64.b64encode(inhalt_bytes).decode("utf-8")
+    }
+    if sha:
+        data["sha"] = sha
+    try:
+        github_api("PUT", "contents/" + dateiname, data)
+        return True
+    except Exception as e:
+        logger.error("GitHub Fehler: " + str(e))
+        return False
+
+
+# ─────────────────────────────────────────────
+# KUNDENDATEN
+# ─────────────────────────────────────────────
+
+def lade_kunden():
+    """Lädt Kunden aus GitHub Excel oder gibt Standardkunden zurück."""
+    try:
+        import openpyxl
+        inhalt, _ = lade_datei_von_github(KUNDEN_FILE_GITHUB)
+        if inhalt is None:
+            return STANDARD_KUNDEN
+        wb = openpyxl.load_workbook(io.BytesIO(inhalt))
+        ws = wb.active
+        headers = [str(ws.cell(1, c).value or "").strip().lower() for c in range(1, ws.max_column + 1)]
+        kunden = []
+        for row in ws.iter_rows(min_row=2, values_only=True):
+            if not any(row):
+                continue
+            kunde = {}
+            for i, h in enumerate(headers):
+                val = str(row[i]).strip() if row[i] is not None else ""
+                if "name" in h:
+                    kunde["name"] = val
+                elif "email" in h or "mail" in h:
+                    kunde["email"] = val
+                elif "adresse" in h or "adress" in h:
+                    kunde["adresse"] = val
+                elif "schloss" in h or "typ" in h:
+                    kunde["schloss"] = val
+            if kunde.get("name"):
+                kunden.append(kunde)
+        return kunden if kunden else STANDARD_KUNDEN
+    except Exception as e:
+        logger.error("Kunden laden Fehler: " + str(e))
+        return STANDARD_KUNDEN
+
+
+def speichere_kunden_auf_github(kunden):
+    """Speichert Kundenliste als Excel auf GitHub."""
+    try:
+        import openpyxl
+        from openpyxl.styles import Font, PatternFill, Alignment
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Kunden"
+        headers = ["Name", "Email", "Adresse", "Schlosstyp"]
+        for col, h in enumerate(headers, 1):
+            cell = ws.cell(row=1, column=col, value=h)
+            cell.font = Font(bold=True, color="FFFFFF")
+            cell.fill = PatternFill("solid", start_color="1F4E79")
+            cell.alignment = Alignment(horizontal="center")
+        ws.column_dimensions["A"].width = 25
+        ws.column_dimensions["B"].width = 30
+        ws.column_dimensions["C"].width = 35
+        ws.column_dimensions["D"].width = 22
+        for k in kunden:
+            ws.append([k.get("name",""), k.get("email",""), k.get("adresse",""), k.get("schloss","")])
+        buf = io.BytesIO()
+        wb.save(buf)
+        buf.seek(0)
+        _, sha = lade_datei_von_github(KUNDEN_FILE_GITHUB)
+        return speichere_datei_auf_github(KUNDEN_FILE_GITHUB, buf.read(), "Kundenliste aktualisiert", sha)
+    except Exception as e:
+        logger.error("Kunden speichern Fehler: " + str(e))
+        return False
+
+
+# ─────────────────────────────────────────────
+# RECHNUNGSLOG
+# ─────────────────────────────────────────────
 
 def speichere_rechnungslog(eintrag):
-    log = []
-    if os.path.exists(LOG_FILE):
-        with open(LOG_FILE, "r", encoding="utf-8") as f:
-            log = json.load(f)
-    log.append(eintrag)
-    with open(LOG_FILE, "w", encoding="utf-8") as f:
-        json.dump(log, f, ensure_ascii=False, indent=2)
+    """Liest Log von GitHub, fügt Eintrag hinzu, speichert zurück."""
+    try:
+        import openpyxl
+        from openpyxl.styles import Font, PatternFill, Alignment
+        inhalt, sha = lade_datei_von_github(LOG_FILE_GITHUB)
+        if inhalt:
+            wb = openpyxl.load_workbook(io.BytesIO(inhalt))
+            ws = wb.active
+        else:
+            wb = openpyxl.Workbook()
+            ws = wb.active
+            ws.title = "Rechnungslog"
+            headers = ["Datum", "Rechnungs-Nr.", "Name", "Email", "Adresse", "Schlosstyp", "Leistungen", "Stunden", "Gesamt (EUR)"]
+            for col, h in enumerate(headers, 1):
+                cell = ws.cell(row=1, column=col, value=h)
+                cell.font = Font(bold=True, color="FFFFFF")
+                cell.fill = PatternFill("solid", start_color="1F6B3A")
+                cell.alignment = Alignment(horizontal="center")
+            ws.column_dimensions["A"].width = 18
+            ws.column_dimensions["B"].width = 18
+            ws.column_dimensions["C"].width = 25
+            ws.column_dimensions["D"].width = 30
+            ws.column_dimensions["E"].width = 35
+            ws.column_dimensions["F"].width = 22
+            ws.column_dimensions["G"].width = 40
+            ws.column_dimensions["H"].width = 10
+            ws.column_dimensions["I"].width = 14
 
+        ws.append([
+            eintrag.get("datum", ""),
+            eintrag.get("rechnungsnummer", ""),
+            eintrag.get("name", ""),
+            eintrag.get("email", ""),
+            eintrag.get("adresse", ""),
+            eintrag.get("schloss", ""),
+            eintrag.get("leistungen", ""),
+            eintrag.get("stunden", 0),
+            eintrag.get("gesamt", 0),
+        ])
+        buf = io.BytesIO()
+        wb.save(buf)
+        buf.seek(0)
+        ok = speichere_datei_auf_github(
+            LOG_FILE_GITHUB,
+            buf.read(),
+            "Rechnung " + eintrag.get("rechnungsnummer", "") + " fuer " + eintrag.get("name", ""),
+            sha
+        )
+        return ok
+    except Exception as e:
+        logger.error("Log speichern Fehler: " + str(e))
+        return False
+
+
+# ─────────────────────────────────────────────
+# PDF & EMAIL
+# ─────────────────────────────────────────────
 
 def erstelle_rechnung_pdf(kunde, leistungen, stunden, rechnungsnummer):
     buffer = io.BytesIO()
@@ -162,29 +331,36 @@ def sende_email(kunde, pdf_buffer, rechnungsnummer):
         return False
 
 
+# ─────────────────────────────────────────────
+# KEYBOARD
+# ─────────────────────────────────────────────
+
 def zeige_leistungen_keyboard():
     keyboard = []
     row = []
     for name, preis in LEISTUNGEN.items():
-        row.append(InlineKeyboardButton(name + " (" + str(int(preis)) + "€)", callback_data="add_" + name))
+        row.append(InlineKeyboardButton(name + " (" + str(int(preis)) + "EUR)", callback_data="add_" + name))
         if len(row) == 2:
             keyboard.append(row)
             row = []
     if row:
         keyboard.append(row)
-    keyboard.append([InlineKeyboardButton("⏱ Arbeitsstunden eingeben", callback_data="stunden")])
-    keyboard.append([InlineKeyboardButton("✅ Rechnung erstellen", callback_data="erstellen")])
+    keyboard.append([InlineKeyboardButton("Arbeitsstunden eingeben", callback_data="stunden")])
+    keyboard.append([InlineKeyboardButton("Rechnung erstellen", callback_data="erstellen")])
     return keyboard
 
 
+# ─────────────────────────────────────────────
+# HANDLER
+# ─────────────────────────────────────────────
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🔑 SchlossBot\n\n🔍 Kundennamen eingeben (oder Teil davon):\nz.B. 'max' oder 'weber'\n\n📤 Excel hochladen: Schick die Kundenliste als .xlsx Datei"
+        "SchlossBot\n\nKundennamen eingeben (oder Teil davon):\nz.B. 'max' oder 'weber'\n\nExcel hochladen: Schick die Kundenliste als .xlsx Datei\n/log - Rechnungslog aus GitHub herunterladen"
     )
 
 
 async def suche_kunde(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Warte auf Stundeneingabe
     if context.user_data.get("warte_auf_stunden"):
         try:
             stunden = float(update.message.text.strip().replace(",", "."))
@@ -207,12 +383,12 @@ async def suche_kunde(update: Update, context: ContextTypes.DEFAULT_TYPE):
     kunden = lade_kunden()
     treffer = [(i, k) for i, k in enumerate(kunden) if suchbegriff in k["name"].lower()]
     if not treffer:
-        await update.message.reply_text("❌ Kein Kunde gefunden. Nochmal versuchen:")
+        await update.message.reply_text("Kein Kunde gefunden. Nochmal versuchen:")
         return
     keyboard = []
     for i, kunde in treffer:
         keyboard.append([InlineKeyboardButton(
-            "👤 " + kunde["name"] + " – " + kunde["schloss"],
+            kunde["name"] + " - " + kunde.get("schloss", ""),
             callback_data="kunde_" + str(i)
         )])
     await update.message.reply_text(
@@ -226,7 +402,7 @@ async def excel_hochladen(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not doc.file_name.endswith(".xlsx"):
         await update.message.reply_text("Bitte eine .xlsx Datei schicken.")
         return
-    await update.message.reply_text("⏳ Lade Excel-Datei...")
+    await update.message.reply_text("Lade Excel-Datei...")
     file = await doc.get_file()
     excel_bytes = await file.download_as_bytearray()
     try:
@@ -234,7 +410,7 @@ async def excel_hochladen(update: Update, context: ContextTypes.DEFAULT_TYPE):
         wb = openpyxl.load_workbook(io.BytesIO(excel_bytes))
         ws = wb.active
         kunden = []
-        headers = [str(ws.cell(1, c).value).strip().lower() for c in range(1, ws.max_column + 1)]
+        headers = [str(ws.cell(1, c).value or "").strip().lower() for c in range(1, ws.max_column + 1)]
         for row in ws.iter_rows(min_row=2, values_only=True):
             if not any(row):
                 continue
@@ -251,13 +427,18 @@ async def excel_hochladen(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     kunde["schloss"] = val
             if kunde.get("name"):
                 kunden.append(kunde)
-        with open(KUNDEN_FILE, "w", encoding="utf-8") as f:
-            json.dump(kunden, f, ensure_ascii=False, indent=2)
+
+        # Auf GitHub speichern
+        buf = io.BytesIO(bytes(excel_bytes))
+        _, sha = lade_datei_von_github(KUNDEN_FILE_GITHUB)
+        ok = speichere_datei_auf_github(KUNDEN_FILE_GITHUB, bytes(excel_bytes), "Kundenliste aktualisiert", sha)
+
+        github_status = " (auf GitHub gespeichert)" if ok else " (GitHub-Speicherung fehlgeschlagen)"
         await update.message.reply_text(
-            "✅ " + str(len(kunden)) + " Kunden geladen!\n\nJetzt Namen eingeben zum Suchen:"
+            str(len(kunden)) + " Kunden geladen" + github_status + "!\n\nJetzt Namen eingeben zum Suchen:"
         )
     except Exception as e:
-        await update.message.reply_text("❌ Fehler beim Lesen: " + str(e))
+        await update.message.reply_text("Fehler beim Lesen: " + str(e))
 
 
 async def inline_suche(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -288,7 +469,7 @@ async def kunde_ausgewaehlt(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["leistungen"] = []
     context.user_data["stunden"] = 0
     await query.edit_message_text(
-        "Kunde: " + kunde["name"] + "\nSchloss: " + kunde["schloss"] + "\n\nLeistungen antippen (mehrfach = mehrmals):",
+        "Kunde: " + kunde["name"] + "\nSchloss: " + kunde.get("schloss", "-") + "\n\nLeistungen antippen (mehrfach = mehrmals):",
         reply_markup=InlineKeyboardMarkup(zeige_leistungen_keyboard())
     )
 
@@ -307,7 +488,7 @@ async def inline_kunde_start(update: Update, context: ContextTypes.DEFAULT_TYPE)
     context.user_data["leistungen"] = []
     context.user_data["stunden"] = 0
     await update.message.reply_text(
-        "Kunde: " + kunde["name"] + "\nSchloss: " + kunde["schloss"] + "\n\nLeistungen antippen:",
+        "Kunde: " + kunde["name"] + "\nSchloss: " + kunde.get("schloss", "-") + "\n\nLeistungen antippen:",
         reply_markup=InlineKeyboardMarkup(zeige_leistungen_keyboard())
     )
 
@@ -327,7 +508,7 @@ async def leistung_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer()
         context.user_data["warte_auf_stunden"] = True
         await query.edit_message_text(
-            "Wie viele Arbeitsstunden? (z.B. 1.5 fuer 1,5 Stunden)\n20 EUR pro Stunde\n\nEinfach die Zahl tippen:"
+            "Wie viele Arbeitsstunden? (z.B. 1.5 fuer 1,5 Stunden)\n" + str(STUNDENSATZ) + " EUR pro Stunde\n\nEinfach die Zahl tippen:"
         )
 
     elif query.data == "erstellen":
@@ -351,21 +532,21 @@ async def leistung_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         rechnungsnummer = "RE" + datetime.now().strftime('%Y%m%d%H%M')
         text = "Vorschau\n\nKunde: " + kunde["name"] + "\nEmail: " + kunde["email"] + "\n\nLeistungen:\n"
         for l in leistungen_liste:
-            text += "  " + l["name"] + " x" + str(l["menge"]) + " = " + str(round(l["preis"]*l["menge"], 2)) + "EUR\n"
+            text += "  " + l["name"] + " x" + str(l["menge"]) + " = " + str(round(l["preis"]*l["menge"], 2)) + " EUR\n"
         if stunden and stunden > 0:
-            text += "  Arbeit " + str(stunden) + " Std. = " + str(round(stunden * STUNDENSATZ, 2)) + "EUR\n"
-        text += "\nGesamt (inkl. MwSt.): " + str(round(gesamt, 2)) + "EUR"
+            text += "  Arbeit " + str(stunden) + " Std. = " + str(round(stunden * STUNDENSATZ, 2)) + " EUR\n"
+        text += "\nGesamt (inkl. MwSt.): " + str(round(gesamt, 2)) + " EUR"
         context.user_data["leistungen_liste"] = leistungen_liste
         context.user_data["rechnungsnummer"] = rechnungsnummer
         keyboard = [
-            [InlineKeyboardButton("📧 PDF erstellen & senden", callback_data="senden")],
-            [InlineKeyboardButton("🔄 Neu starten", callback_data="neustart")]
+            [InlineKeyboardButton("PDF erstellen & senden", callback_data="senden")],
+            [InlineKeyboardButton("Neu starten", callback_data="neustart")]
         ]
         await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
 
     elif query.data == "senden":
         await query.answer()
-        await query.edit_message_text("⏳ Erstelle PDF...")
+        await query.edit_message_text("Erstelle PDF...")
         kunde = context.user_data["kunde"]
         leistungen_liste = context.user_data["leistungen_liste"]
         stunden = context.user_data.get("stunden", 0)
@@ -380,7 +561,7 @@ async def leistung_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             caption="Rechnung " + rechnungsnummer + " fuer " + kunde["name"]
         )
 
-        # Log speichern
+        # Log auf GitHub speichern
         leistungen_text = ", ".join([l["name"] + " x" + str(l["menge"]) for l in leistungen_liste])
         eintrag = {
             "datum": datetime.now().strftime('%d.%m.%Y %H:%M'),
@@ -393,15 +574,17 @@ async def leistung_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "stunden": stunden,
             "gesamt": gesamt
         }
-        speichere_rechnungslog(eintrag)
+        log_ok = speichere_rechnungslog(eintrag)
+        github_status = " Log auf GitHub gespeichert." if log_ok else " GitHub-Log fehlgeschlagen."
 
         pdf_buffer.seek(0)
         email_ok = sende_email(kunde, pdf_buffer, rechnungsnummer)
         if email_ok:
-            status = "✅ Email an " + kunde["email"] + " gesendet!"
+            status = "Email an " + kunde["email"] + " gesendet!" + github_status
         else:
-            status = "✅ PDF erstellt! Email nicht konfiguriert."
-        keyboard = [[InlineKeyboardButton("🔄 Neue Rechnung", callback_data="neustart")]]
+            status = "PDF erstellt! Email nicht konfiguriert." + github_status
+
+        keyboard = [[InlineKeyboardButton("Neue Rechnung", callback_data="neustart")]]
         await context.bot.send_message(
             chat_id=update.effective_chat.id,
             text=status,
@@ -411,65 +594,32 @@ async def leistung_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif query.data == "neustart":
         await query.answer()
         context.user_data.clear()
-        await query.edit_message_text(
-            "🔑 SchlossBot\n\n🔍 Kundennamen eingeben:"
-        )
+        await query.edit_message_text("SchlossBot\n\nKundennamen eingeben:")
 
 
 async def log_exportieren(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not os.path.exists(LOG_FILE):
-        await update.message.reply_text("Noch keine Rechnungen vorhanden.")
-        return
-    with open(LOG_FILE, "r", encoding="utf-8") as f:
-        log = json.load(f)
-    if not log:
-        await update.message.reply_text("Log ist leer.")
-        return
+    """Lädt den Rechnungslog von GitHub und schickt ihn."""
+    await update.message.reply_text("Lade Rechnungslog von GitHub...")
     try:
-        import openpyxl
-        from openpyxl.styles import Font, PatternFill, Alignment
-        wb = openpyxl.Workbook()
-        ws = wb.active
-        ws.title = "Rechnungslog"
-        headers = ["Datum", "Rechnungs-Nr.", "Name", "Email", "Adresse", "Schlosstyp", "Leistungen", "Stunden", "Gesamt (EUR)"]
-        for col, h in enumerate(headers, 1):
-            cell = ws.cell(row=1, column=col, value=h)
-            cell.font = Font(bold=True, color="FFFFFF")
-            cell.fill = PatternFill("solid", start_color="1F6B3A")
-            cell.alignment = Alignment(horizontal="center")
-        ws.column_dimensions["A"].width = 18
-        ws.column_dimensions["B"].width = 18
-        ws.column_dimensions["C"].width = 25
-        ws.column_dimensions["D"].width = 30
-        ws.column_dimensions["E"].width = 35
-        ws.column_dimensions["F"].width = 22
-        ws.column_dimensions["G"].width = 40
-        ws.column_dimensions["H"].width = 10
-        ws.column_dimensions["I"].width = 14
-        for eintrag in log:
-            ws.append([
-                eintrag.get("datum", ""),
-                eintrag.get("rechnungsnummer", ""),
-                eintrag.get("name", ""),
-                eintrag.get("email", ""),
-                eintrag.get("adresse", ""),
-                eintrag.get("schloss", ""),
-                eintrag.get("leistungen", ""),
-                eintrag.get("stunden", 0),
-                eintrag.get("gesamt", 0),
-            ])
-        buf = io.BytesIO()
-        wb.save(buf)
+        inhalt, _ = lade_datei_von_github(LOG_FILE_GITHUB)
+        if inhalt is None:
+            await update.message.reply_text("Noch keine Rechnungen vorhanden (keine Datei auf GitHub).")
+            return
+        buf = io.BytesIO(inhalt)
         buf.seek(0)
         await context.bot.send_document(
             chat_id=update.effective_chat.id,
             document=buf,
             filename="Rechnungslog_" + datetime.now().strftime('%Y%m%d') + ".xlsx",
-            caption="📊 Rechnungslog mit " + str(len(log)) + " Eintraegen"
+            caption="Rechnungslog von GitHub"
         )
     except Exception as e:
-        await update.message.reply_text("Fehler beim Export: " + str(e))
+        await update.message.reply_text("Fehler: " + str(e))
 
+
+# ─────────────────────────────────────────────
+# MAIN
+# ─────────────────────────────────────────────
 
 async def main():
     if not TOKEN:
