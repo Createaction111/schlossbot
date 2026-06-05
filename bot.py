@@ -1,8 +1,14 @@
 import os
 import logging
 import asyncio
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InlineQueryResultArticle, InputTextMessageContent
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, InlineQueryHandler, filters, ContextTypes
+from telegram import (
+    Update, InlineKeyboardButton, InlineKeyboardMarkup,
+    InlineQueryResultArticle, InputTextMessageContent
+)
+from telegram.ext import (
+    Application, CommandHandler, CallbackQueryHandler,
+    MessageHandler, InlineQueryHandler, filters, ContextTypes
+)
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -41,7 +47,6 @@ def erstelle_rechnung_pdf(kunde, leistungen, rechnungsnummer):
     buffer = io.BytesIO()
     c = canvas.Canvas(buffer, pagesize=A4)
     width, height = A4
-
     c.setFont("Helvetica-Bold", 18)
     c.drawString(2*cm, height - 2*cm, "RECHNUNG")
     c.setFont("Helvetica-Bold", 12)
@@ -50,16 +55,14 @@ def erstelle_rechnung_pdf(kunde, leistungen, rechnungsnummer):
     c.drawString(2*cm, height - 3.5*cm, "Schlossweg 1, 97070 Wuerzburg")
     c.drawString(2*cm, height - 4*cm, "Tel: 0931 123456")
     c.drawString(2*cm, height - 4.5*cm, "USt-ID: DE123456789")
-    c.drawString(13*cm, height - 3*cm, f"Rechnungs-Nr.: {rechnungsnummer}")
-    c.drawString(13*cm, height - 3.5*cm, f"Datum: {datetime.now().strftime('%d.%m.%Y')}")
-
+    c.drawString(13*cm, height - 3*cm, "Rechnungs-Nr.: " + rechnungsnummer)
+    c.drawString(13*cm, height - 3.5*cm, "Datum: " + datetime.now().strftime('%d.%m.%Y'))
     c.setFont("Helvetica-Bold", 11)
     c.drawString(2*cm, height - 6*cm, "Rechnungsempfaenger:")
     c.setFont("Helvetica", 10)
     c.drawString(2*cm, height - 6.5*cm, kunde["name"])
     c.drawString(2*cm, height - 7*cm, kunde["adresse"])
-    c.drawString(2*cm, height - 7.5*cm, f"Schlosstyp: {kunde.get('schloss', '-')}")
-
+    c.drawString(2*cm, height - 7.5*cm, "Schlosstyp: " + kunde.get("schloss", "-"))
     y = height - 9.5*cm
     c.setFont("Helvetica-Bold", 10)
     c.drawString(2*cm, y, "Leistung")
@@ -67,7 +70,6 @@ def erstelle_rechnung_pdf(kunde, leistungen, rechnungsnummer):
     c.drawString(15*cm, y, "Preis")
     y -= 0.3*cm
     c.line(2*cm, y, 19*cm, y)
-
     gesamt = 0
     c.setFont("Helvetica", 10)
     for leistung in leistungen:
@@ -75,9 +77,8 @@ def erstelle_rechnung_pdf(kunde, leistungen, rechnungsnummer):
         c.drawString(2*cm, y, leistung["name"])
         c.drawString(13*cm, y, str(leistung.get("menge", 1)))
         preis = leistung["preis"] * leistung.get("menge", 1)
-        c.drawRightString(19*cm, y, f"{preis:.2f} EUR")
+        c.drawRightString(19*cm, y, str(round(preis, 2)) + " EUR")
         gesamt += preis
-
     y -= 0.5*cm
     c.line(2*cm, y, 19*cm, y)
     y -= 0.7*cm
@@ -85,14 +86,14 @@ def erstelle_rechnung_pdf(kunde, leistungen, rechnungsnummer):
     netto = gesamt - mwst
     c.setFont("Helvetica", 10)
     c.drawString(13*cm, y, "Netto:")
-    c.drawRightString(19*cm, y, f"{netto:.2f} EUR")
+    c.drawRightString(19*cm, y, str(round(netto, 2)) + " EUR")
     y -= 0.5*cm
     c.drawString(13*cm, y, "MwSt. 19%:")
-    c.drawRightString(19*cm, y, f"{mwst:.2f} EUR")
+    c.drawRightString(19*cm, y, str(round(mwst, 2)) + " EUR")
     y -= 0.5*cm
     c.setFont("Helvetica-Bold", 11)
     c.drawString(13*cm, y, "GESAMT:")
-    c.drawRightString(19*cm, y, f"{gesamt:.2f} EUR")
+    c.drawRightString(19*cm, y, str(round(gesamt, 2)) + " EUR")
     c.setFont("Helvetica", 9)
     c.drawString(2*cm, 2*cm, "Zahlbar innerhalb von 14 Tagen. Vielen Dank!")
     c.save()
@@ -106,13 +107,13 @@ def sende_email(kunde, pdf_buffer, rechnungsnummer):
     msg = MIMEMultipart()
     msg['From'] = GMAIL_USER
     msg['To'] = kunde["email"]
-    msg['Subject'] = f"Rechnung Nr. {rechnungsnummer} - SchlossTechnik Meier"
-    body = f"Sehr geehrte/r {kunde['name']},\n\nanbei Ihre Rechnung Nr. {rechnungsnummer}.\n\nMit freundlichen Gruessen\nSchlossTechnik Meier"
+    msg['Subject'] = "Rechnung Nr. " + rechnungsnummer + " - SchlossTechnik Meier"
+    body = "Sehr geehrte/r " + kunde["name"] + ",\n\nanbei Ihre Rechnung Nr. " + rechnungsnummer + ".\n\nMit freundlichen Gruessen\nSchlossTechnik Meier"
     msg.attach(MIMEText(body, 'plain', 'utf-8'))
     part = MIMEBase('application', 'octet-stream')
     part.set_payload(pdf_buffer.read())
     encoders.encode_base64(part)
-    part.add_header('Content-Disposition', f'attachment; filename="Rechnung_{rechnungsnummer}.pdf"')
+    part.add_header('Content-Disposition', 'attachment; filename="Rechnung_' + rechnungsnummer + '.pdf"')
     msg.attach(part)
     try:
         server = smtplib.SMTP_SSL('smtp.gmail.com', 465)
@@ -121,22 +122,66 @@ def sende_email(kunde, pdf_buffer, rechnungsnummer):
         server.quit()
         return True
     except Exception as e:
-        logger.error(f"Email Fehler: {e}")
+        logger.error("Email Fehler: " + str(e))
         return False
 
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def zeige_leistungen_keyboard(kunde):
     keyboard = []
-    for i, kunde in enumerate(KUNDEN):
+    row = []
+    for name, preis in LEISTUNGEN.items():
+        row.append(InlineKeyboardButton(name + " (" + str(int(preis)) + "€)", callback_data="add_" + name))
+        if len(row) == 2:
+            keyboard.append(row)
+            row = []
+    if row:
+        keyboard.append(row)
+    keyboard.append([InlineKeyboardButton("✅ Rechnung erstellen", callback_data="erstellen")])
+    return keyboard
+
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "🔑 SchlossBot\n\n🔍 Tippe einen Kundennamen (oder Teil davon):\nz.B. 'max' oder 'weber'"
+    )
+
+
+async def suche_kunde(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text.strip()
+    if text.startswith("/"):
+        return
+    suchbegriff = text.lower()
+    treffer = [(i, k) for i, k in enumerate(KUNDEN) if suchbegriff in k["name"].lower()]
+    if not treffer:
+        await update.message.reply_text("❌ Kein Kunde gefunden. Nochmal versuchen:")
+        return
+    keyboard = []
+    for i, kunde in treffer:
         keyboard.append([InlineKeyboardButton(
-            f"👤 {kunde['name']} – {kunde['schloss']}",
-            callback_data=f"kunde_{i}"
+            "👤 " + kunde["name"] + " – " + kunde["schloss"],
+            callback_data="kunde_" + str(i)
         )])
     await update.message.reply_text(
-        "🔑 *SchlossBot*\n\nWelchen Kunden abrechnen?",
-        reply_markup=InlineKeyboardMarkup(keyboard),
-        parse_mode='Markdown'
+        str(len(treffer)) + " Treffer:",
+        reply_markup=InlineKeyboardMarkup(keyboard)
     )
+
+
+async def inline_suche(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.inline_query.query.strip().lower()
+    if not query:
+        treffer = list(enumerate(KUNDEN))
+    else:
+        treffer = [(i, k) for i, k in enumerate(KUNDEN) if query in k["name"].lower()]
+    results = []
+    for i, kunde in treffer:
+        results.append(InlineQueryResultArticle(
+            id=str(i),
+            title=kunde["name"],
+            description=kunde["schloss"] + " | " + kunde["adresse"],
+            input_message_content=InputTextMessageContent("/start_kunde_" + str(i))
+        ))
+    await update.inline_query.answer(results, cache_time=0)
 
 
 async def kunde_ausgewaehlt(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -144,24 +189,30 @@ async def kunde_ausgewaehlt(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     idx = int(query.data.split("_")[1])
     kunde = KUNDEN[idx]
-    context.user_data['kunde'] = kunde
-    context.user_data['leistungen'] = []
-
-    keyboard = []
-    row = []
-    for name, preis in LEISTUNGEN.items():
-        row.append(InlineKeyboardButton(f"{name} ({preis:.0f}€)", callback_data=f"add_{name}"))
-        if len(row) == 2:
-            keyboard.append(row)
-            row = []
-    if row:
-        keyboard.append(row)
-    keyboard.append([InlineKeyboardButton("✅ Rechnung erstellen", callback_data="erstellen")])
-
+    context.user_data["kunde"] = kunde
+    context.user_data["leistungen"] = []
+    keyboard = zeige_leistungen_keyboard(kunde)
     await query.edit_message_text(
-        f"*Kunde:* {kunde['name']}\n*Schloss:* {kunde['schloss']}\n\nLeistungen antippen (mehrfach = mehrmals):",
-        reply_markup=InlineKeyboardMarkup(keyboard),
-        parse_mode='Markdown'
+        "Kunde: " + kunde["name"] + "\nSchloss: " + kunde["schloss"] + "\n\nLeistungen antippen (mehrfach = mehrmals):",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
+
+async def inline_kunde_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text.strip()
+    if not text.startswith("/start_kunde_"):
+        return
+    try:
+        idx = int(text.replace("/start_kunde_", ""))
+        kunde = KUNDEN[idx]
+    except Exception:
+        return
+    context.user_data["kunde"] = kunde
+    context.user_data["leistungen"] = []
+    keyboard = zeige_leistungen_keyboard(kunde)
+    await update.message.reply_text(
+        "Kunde: " + kunde["name"] + "\nSchloss: " + kunde["schloss"] + "\n\nLeistungen antippen:",
+        reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
 
@@ -170,19 +221,19 @@ async def leistung_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if query.data.startswith("add_"):
         leistung_name = query.data[4:]
-        if 'leistungen' not in context.user_data:
-            context.user_data['leistungen'] = []
-        context.user_data['leistungen'].append(leistung_name)
-        count = context.user_data['leistungen'].count(leistung_name)
-        await query.answer(f"✅ {leistung_name} x{count}")
+        if "leistungen" not in context.user_data:
+            context.user_data["leistungen"] = []
+        context.user_data["leistungen"].append(leistung_name)
+        count = context.user_data["leistungen"].count(leistung_name)
+        await query.answer(leistung_name + " x" + str(count))
 
     elif query.data == "erstellen":
         await query.answer()
-        leistungen = context.user_data.get('leistungen', [])
+        leistungen = context.user_data.get("leistungen", [])
         if not leistungen:
             await query.answer("Bitte zuerst Leistungen auswaehlen!", show_alert=True)
             return
-        kunde = context.user_data['kunde']
+        kunde = context.user_data["kunde"]
         zusammengefasst = {}
         for l in leistungen:
             zusammengefasst[l] = zusammengefasst.get(l, 0) + 1
@@ -191,37 +242,37 @@ async def leistung_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             for name, menge in zusammengefasst.items()
         ]
         gesamt = sum(l["preis"] * l["menge"] for l in leistungen_liste)
-        rechnungsnummer = f"RE{datetime.now().strftime('%Y%m%d%H%M')}"
-        text = f"📄 *Vorschau*\n\n*Kunde:* {kunde['name']}\n*Email:* {kunde['email']}\n\n*Leistungen:*\n"
+        rechnungsnummer = "RE" + datetime.now().strftime('%Y%m%d%H%M')
+        text = "Vorschau\n\nKunde: " + kunde["name"] + "\nEmail: " + kunde["email"] + "\n\nLeistungen:\n"
         for l in leistungen_liste:
-            text += f"  • {l['name']} x{l['menge']} = {l['preis']*l['menge']:.2f}€\n"
-        text += f"\n*Gesamt (inkl. MwSt.):* {gesamt:.2f}€"
-        context.user_data['leistungen_liste'] = leistungen_liste
-        context.user_data['rechnungsnummer'] = rechnungsnummer
+            text += "  " + l["name"] + " x" + str(l["menge"]) + " = " + str(round(l["preis"]*l["menge"], 2)) + "€\n"
+        text += "\nGesamt (inkl. MwSt.): " + str(round(gesamt, 2)) + "€"
+        context.user_data["leistungen_liste"] = leistungen_liste
+        context.user_data["rechnungsnummer"] = rechnungsnummer
         keyboard = [
-            [InlineKeyboardButton("📧 PDF senden", callback_data="senden")],
+            [InlineKeyboardButton("📧 PDF erstellen & senden", callback_data="senden")],
             [InlineKeyboardButton("🔄 Neu starten", callback_data="neustart")]
         ]
-        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
 
     elif query.data == "senden":
         await query.answer()
         await query.edit_message_text("⏳ Erstelle PDF...")
-        kunde = context.user_data['kunde']
-        leistungen_liste = context.user_data['leistungen_liste']
-        rechnungsnummer = context.user_data['rechnungsnummer']
+        kunde = context.user_data["kunde"]
+        leistungen_liste = context.user_data["leistungen_liste"]
+        rechnungsnummer = context.user_data["rechnungsnummer"]
         pdf_buffer = erstelle_rechnung_pdf(kunde, leistungen_liste, rechnungsnummer)
         pdf_buffer.seek(0)
         await context.bot.send_document(
             chat_id=update.effective_chat.id,
             document=pdf_buffer,
-            filename=f"Rechnung_{rechnungsnummer}.pdf",
-            caption=f"📄 Rechnung {rechnungsnummer} fuer {kunde['name']}"
+            filename="Rechnung_" + rechnungsnummer + ".pdf",
+            caption="Rechnung " + rechnungsnummer + " fuer " + kunde["name"]
         )
         pdf_buffer.seek(0)
         email_ok = sende_email(kunde, pdf_buffer, rechnungsnummer)
         if email_ok:
-            status = f"✅ Email an {kunde['email']} gesendet!"
+            status = "✅ Email an " + kunde["email"] + " gesendet!"
         else:
             status = "✅ PDF erstellt! Email nicht konfiguriert – PDF oben weiterleiten."
         keyboard = [[InlineKeyboardButton("🔄 Neue Rechnung", callback_data="neustart")]]
@@ -233,67 +284,10 @@ async def leistung_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif query.data == "neustart":
         await query.answer()
-        keyboard = []
-        for i, kunde in enumerate(KUNDEN):
-            keyboard.append([InlineKeyboardButton(
-                f"👤 {kunde['name']} – {kunde['schloss']}",
-                callback_data=f"kunde_{i}"
-            )])
         await query.edit_message_text(
-            "🔑 *SchlossBot*\n\nWelchen Kunden abrechnen?",
-            reply_markup=InlineKeyboardMarkup(keyboard),
-            parse_mode='Markdown'
+            "🔑 SchlossBot\n\n🔍 Tippe einen Kundennamen (oder Teil davon):"
         )
 
-
-
-async def inline_suche(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.inline_query.query.strip().lower()
-    if not query:
-        treffer = list(enumerate(KUNDEN))
-    else:
-        treffer = [(i, k) for i, k in enumerate(KUNDEN) if query in k["name"].lower()]
-
-    results = []
-    for i, kunde in treffer:
-        results.append(InlineQueryResultArticle(
-            id=str(i),
-            title=kunde["name"],
-            description=f"{kunde['schloss']} | {kunde['adresse']}",
-            input_message_content=InputTextMessageContent(f"/kunde_{i}")
-        ))
-    await update.inline_query.answer(results, cache_time=0)
-
-
-async def kunde_per_inline(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text.strip()
-    if not text.startswith("/kunde_"):
-        return
-    try:
-        idx = int(text.replace("/kunde_", ""))
-        kunde = KUNDEN[idx]
-    except:
-        return
-    context.user_data["kunde"] = kunde
-    context.user_data["leistungen"] = []
-    keyboard = []
-    row = []
-    for name, preis in LEISTUNGEN.items():
-        row.append(InlineKeyboardButton(f"{name} ({preis:.0f}€)", callback_data=f"add_{name}"))
-        if len(row) == 2:
-            keyboard.append(row)
-            row = []
-    if row:
-        keyboard.append(row)
-    keyboard.append([InlineKeyboardButton("✅ Rechnung erstellen", callback_data="erstellen")])
-    await update.message.reply_text(
-        f"*Kunde:* {kunde['name']}
-*Schloss:* {kunde['schloss']}
-
-Leistungen antippen:",
-        reply_markup=InlineKeyboardMarkup(keyboard),
-        parse_mode="Markdown"
-    )
 
 async def main():
     if not TOKEN:
@@ -302,8 +296,11 @@ async def main():
     logger.info("Bot laeuft...")
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(InlineQueryHandler(inline_suche))
     app.add_handler(CallbackQueryHandler(kunde_ausgewaehlt, pattern=r"^kunde_\d+$"))
     app.add_handler(CallbackQueryHandler(leistung_callback, pattern=r"^(add_|erstellen|senden|neustart)"))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, suche_kunde))
+    app.add_handler(MessageHandler(filters.Regex(r"^/start_kunde_"), inline_kunde_start))
     await app.initialize()
     await app.start()
     await app.updater.start_polling(allowed_updates=Update.ALL_TYPES)
